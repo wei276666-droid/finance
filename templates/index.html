@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>金融预测</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; padding: 16px; }
+        .container { max-width: 600px; margin: 0 auto; }
+        .header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); color: white; padding: 24px 20px; border-radius: 20px; margin-bottom: 16px; text-align: center; }
+        .header h1 { font-size: 24px; }
+        .update-time { font-size: 11px; opacity: 0.7; margin-top: 8px; }
+        .card { background: white; border-radius: 16px; padding: 16px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+        .card-title { font-size: 18px; font-weight: 600; margin-bottom: 12px; padding-left: 10px; border-left: 4px solid; }
+        .card-title.up { border-left-color: #e74c3c; color: #e74c3c; }
+        .card-title.down { border-left-color: #27ae60; color: #27ae60; }
+        .stock-item { display: flex; justify-content: space-between; padding: 10px 8px; border-bottom: 1px solid #eee; }
+        .stock-change.up { color: #e74c3c; font-weight: 600; }
+        .stock-change.up::before { content: "+"; }
+        .stock-change.down { color: #27ae60; font-weight: 600; }
+        .refresh-btn { background: #1a1a2e; color: white; border: none; padding: 14px; border-radius: 30px; width: 100%; font-size: 16px; cursor: pointer; margin-top: 8px; }
+        .loading { text-align: center; padding: 40px; color: #999; }
+        .footer { text-align: center; font-size: 11px; color: #999; padding: 20px; }
+        .market-stats { display: flex; margin-top: 16px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.2); }
+        .stat-item { flex: 1; text-align: center; }
+        .stat-value { font-size: 18px; font-weight: 700; }
+        .stat-label { font-size: 10px; opacity: 0.7; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 金融预测</h1>
+            <div class="update-time" id="updateTime">加载中...</div>
+            <div class="market-stats">
+                <div class="stat-item"><div class="stat-value" id="positiveCount">--</div><div class="stat-label">上涨板块</div></div>
+                <div class="stat-item"><div class="stat-value" id="negativeCount">--</div><div class="stat-label">下跌板块</div></div>
+            </div>
+        </div>
+        <div id="content" class="loading">加载中...</div>
+        <button class="refresh-btn" onclick="fetchData()">🔄 刷新数据</button>
+        <div class="footer">数据基于AI预测 • 仅供参考</div>
+    </div>
+    <script>
+        async function fetchData() {
+            document.getElementById('content').innerHTML = '<div class="loading">加载中...</div>';
+            try {
+                const resp = await fetch('/api/predict');
+                const result = await resp.json();
+                if (result.code === 0) {
+                    renderData(result.data);
+                    document.getElementById('updateTime').innerHTML = '📅 更新于 ' + result.data.update_time;
+                    document.getElementById('positiveCount').innerHTML = result.data.summary.positive_count;
+                    document.getElementById('negativeCount').innerHTML = result.data.summary.negative_count;
+                }
+            } catch(e) {
+                document.getElementById('content').innerHTML = '<div class="loading">加载失败</div>';
+            }
+        }
+        function renderData(data) {
+            let html = '<div class="card"><div class="card-title up">📈 上涨预测 TOP10</div>';
+            data.top_gainers.forEach(item => {
+                html += `<div class="stock-item"><span>${item.sector}</span><span class="stock-change up">${item.prediction}%</span></div>`;
+            });
+            html += '</div>';
+            if (data.top_losers && data.top_losers.length > 0) {
+                html += '<div class="card"><div class="card-title down">📉 下跌预测 TOP5</div>';
+                data.top_losers.forEach(item => {
+                    html += `<div class="stock-item"><span>${item.sector}</span><span class="stock-change down">${item.prediction}%</span></div>`;
+                });
+                html += '</div>';
+            }
+            document.getElementById('content').innerHTML = html;
+        }
+        fetchData();
+        setInterval(fetchData, 300000);
+    </script>
+</body>
+</html>
