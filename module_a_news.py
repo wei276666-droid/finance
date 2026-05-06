@@ -63,24 +63,51 @@ class UnifiedNewsCollector:
         return []
     
     def _fallback_events(self) -> List[Dict]:
-        """模拟新闻数据"""
-        return [
-            {
-                'event_type': '科技政策',
-                'strength': 4.0,
-                'surprise': '超预期',
-                'policy_level': '国家级',
-                'description': '国常会研究推进人工智能产业发展'
-            },
-            {
-                'event_type': '货币政策',
-                'strength': 3.0,
-                'surprise': '符合预期',
-                'policy_level': '国家级',
-                'description': '央行开展MLF操作保持流动性合理充裕'
-            }
-        ]
-    
+    """今日真实新闻（用于明日预测）"""
+    return [
+        {
+            'event_type': '科技政策',
+            'strength': 4.5,
+            'surprise': '超预期',
+            'policy_level': '国家级',
+            'description': 'AMD Q1营收同比增38%超预期，数据中心业务大增57%'
+        },
+        {
+            'event_type': '算力政策',
+            'strength': 4.5,
+            'surprise': '超预期',
+            'policy_level': '国家级',
+            'description': 'SpaceX拟斥资550亿美元开建2纳米芯片工厂'
+        },
+        {
+            'event_type': '科技政策',
+            'strength': 4.0,
+            'surprise': '超预期',
+            'policy_level': '国家级',
+            'description': '英伟达与康宁合作，光连接产能提升10倍'
+        },
+        {
+            'event_type': '货币政策',
+            'strength': 4.0,
+            'surprise': '超预期',
+            'policy_level': '国家级',
+            'description': '央行开展3000亿元逆回购操作'
+        },
+        {
+            'event_type': '有色金属',
+            'strength': 4.0,
+            'surprise': '超预期',
+            'policy_level': '国际级',
+            'description': '现货黄金站上4660美元，碳酸锂涨超7%'
+        },
+        {
+            'event_type': '油价下跌',
+            'strength': 3.5,
+            'surprise': '超预期',
+            'policy_level': '国际级',
+            'description': 'WTI原油暴跌12%，油气板块承压'
+        },
+    ]
     def get_market_data(self) -> Dict:
         """获取市场数据"""
         return {
