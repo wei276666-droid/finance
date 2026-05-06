@@ -1,0 +1,35 @@
+# 在 app.py 中添加以下代码
+
+from auto_learner import AutoLearner
+
+# 初始化学习器
+auto_learner = AutoLearner()
+
+
+@app.route('/api/learn', methods=['POST'])
+def learn_from_actual():
+    """收盘后学习API"""
+    try:
+        data = request.get_json()
+        date = data.get('date', datetime.now().strftime('%Y-%m-%d'))
+        actual_returns = data.get('actual_returns', {})
+        
+        if not actual_returns:
+            return jsonify({'code': -1, 'message': 'actual_returns required'}), 400
+        
+        success = auto_learner.learn_from_actual(date, actual_returns)
+        
+        if success:
+            return jsonify({'code': 0, 'message': '学习完成，模型已更新'})
+        else:
+            return jsonify({'code': -1, 'message': '未找到预测记录'}), 404
+            
+    except Exception as e:
+        return jsonify({'code': -1, 'message': str(e)}), 500
+
+
+@app.route('/api/stats', methods=['GET'])
+def get_stats():
+    """获取模型统计信息"""
+    stats = auto_learner.get_model_stats()
+    return jsonify({'code': 0, 'data': stats})
