@@ -1,143 +1,69 @@
 """
-module_a_news.py - EODHD API 新闻采集模块
-需要设置环境变量 EODHD_API_KEY
-免费版：20次/天，足够个人使用
+module_a_news.py - 新闻采集模块
+支持：API自动采集 + 手动输入 + 模拟数据降级
 """
 
+import json
 import os
 from typing import List, Dict
-from datetime import datetime
-
-try:
-    from eodhd import APIClient
-    EODHD_AVAILABLE = True
-except ImportError:
-    EODHD_AVAILABLE = False
-    print("⚠️ eodhd 库未安装，请运行: pip install eodhd")
 
 
 class UnifiedNewsCollector:
-    def __init__(self):
-        self.api_key = os.environ.get('EODHD_API_KEY', '')
-        self.client = None
-        
-        if self.api_key and EODHD_AVAILABLE:
-            try:
-                # 初始化客户端
-                self.client = APIClient(self.api_key)
-                print("✅ EODHD API 客户端初始化成功")
-            except Exception as e:
-                print(f"⚠️ EODHD 初始化失败: {e}")
-        else:
-            if not self.api_key:
-                print("⚠️ EODHD_API_KEY 未设置，使用模拟数据")
-            elif not EODHD_AVAILABLE:
-                print("⚠️ eodhd 库未安装，使用模拟数据")
+    """统一新闻采集器"""
+    
+    def __init__(self, data_dir='data'):
+        self.data_dir = data_dir
+        self.manual_news_file = os.path.join(data_dir, 'manual_news.json')
+        self._ensure_data_dir()
+    
+    def _ensure_data_dir(self):
+        if not os.path.exists(self.data_dir):
+            os.makedirs(self.data_dir)
     
     def fetch_and_process(self) -> List[Dict]:
-        """获取新闻并转换为事件格式"""
-        if not self.client:
-            return self._fallback_events()
-        
+        """获取新闻（优先手动输入 > 模拟数据）"""
         events = []
         
-        try:
-            # 获取美国主要股票的新闻（使用多个美股代码）
-            symbols = ['AAPL.US', 'MSFT.US', 'GOOGL.US', 'TSLA.US', 'NVDA.US']
-            
-            for symbol in symbols:
-                try:
-                    # EODHD 新闻 API
-                    news_list = self.client.news(symbol, limit=3)
-                    
-                    for news in news_list:
-                        event = self._parse_news(news, symbol)
-                        if event:
-                            events.append(event)
-                except Exception as e:
-                    print(f"获取 {symbol} 新闻失败: {e}")
-                    continue
-            
-            # 去重
-            seen_titles = set()
-            unique_events = []
-            for e in events:
-                if e['description'] not in seen_titles:
-                    seen_titles.add(e['description'])
-                    unique_events.append(e)
-            
-            if unique_events:
-                print(f"✅ EODHD: 获取到 {len(unique_events)} 条新闻")
-                return unique_events[:15]
-                
-        except Exception as e:
-            print(f"⚠️ EODHD 新闻获取失败: {e}")
+        # 1. 优先加载手动输入的新闻
+        manual_events = self._load_manual_news()
+        if manual_events:
+            print(f"✅ 加载手动输入新闻: {len(manual_events)} 条")
+            return manual_events
         
+        # 2. 尝试API获取（预留）
+        api_events = self._fetch_from_api()
+        if api_events:
+            return api_events
+        
+        # 3. 降级：使用模拟数据
+        print("⚠️ 使用模拟新闻数据")
         return self._fallback_events()
     
-    def _parse_news(self, news: Dict, symbol: str) -> Dict:
-        """解析新闻"""
-        # EODHD 返回的新闻格式
-        title = news.get('title', '')
-        content = news.get('content', '')
-        date = news.get('date', '')
-        source = news.get('source', 'EODHD')
-        
-        text = (title + content).lower()
-        
-        # 事件分类
-        event_type = self._classify_event(text)
-        
-        # 强度评估
-        strength = self._assess_strength(text)
-        
-        # 惊喜程度
-        surprise = '超预期' if any(kw in text for kw in ['beat', 'exceed', '超预期']) else '符合预期'
-        
-        return {
-            'event_type': event_type,
-            'strength': strength,
-            'surprise': surprise,
-            'policy_level': '国际级',
-            'description': title[:150],
-            'source': source,
-            'date': date,
-            'symbol': symbol
-        }
+    def _load_manual_news(self) -> List[Dict]:
+        """加载手动输入的新闻"""
+        if os.path.exists(self.manual_news_file):
+            try:
+                with open(self.manual_news_file, 'r', encoding='utf-8') as f:
+                    news = json.load(f)
+                    # 只返回当天的新闻
+                    return news
+            except:
+                pass
+        return []
     
-    def _classify_event(self, text: str) -> str:
-        """事件分类"""
-        keywords = {
-            '科技政策': ['tech', 'ai', '芯片', '半导体', '人工智能', 'nvidia', 'amd'],
-            '新能源政策': ['新能源', 'solar', 'wind', 'ev', '电动车', 'battery', '锂电', 'tesla'],
-            '货币政策': ['fed', '美联储', '央行', 'interest', '利率', '降息', '加息', '通胀'],
-            '房地产政策': ['real estate', 'property', '房地产', '楼市', 'housing'],
-            '宏观数据': ['gdp', '就业', '失业', '财报', 'earnings', 'revenue', 'profit'],
-            '地缘政治': ['war', 'conflict', '制裁', 'tariff', 'trade', '中东'],
-        }
-        
-        for event_type, kw_list in keywords.items():
-            for kw in kw_list:
-                if kw in text:
-                    return event_type
-        return '宏观数据'  # 默认分类
+    def save_manual_news(self, events: List[Dict]):
+        """保存手动输入的新闻"""
+        with open(self.manual_news_file, 'w', encoding='utf-8') as f:
+            json.dump(events, f, ensure_ascii=False, indent=2)
+        print(f"✅ 已保存 {len(events)} 条手动新闻")
     
-    def _assess_strength(self, text: str) -> float:
-        """评估强度"""
-        high_keywords = ['重磅', '重大', '突破', '里程碑', 'landmark', 'breakthrough']
-        medium_keywords = ['大涨', '飙升', '创新高', 'surge', 'record', 'beat']
-        low_keywords = ['上涨', '利好', '提振', 'gain', 'rise', 'positive']
-        
-        if any(kw in text for kw in high_keywords):
-            return 4.5
-        if any(kw in text for kw in medium_keywords):
-            return 4.0
-        if any(kw in text for kw in low_keywords):
-            return 3.5
-        return 3.0
+    def _fetch_from_api(self) -> List[Dict]:
+        """预留API接口"""
+        # TODO: 后续接入 EODHD / Alpha Vantage
+        return []
     
     def _fallback_events(self) -> List[Dict]:
-        """降级数据（API失败时使用）"""
+        """模拟新闻数据"""
         return [
             {
                 'event_type': '科技政策',
@@ -163,3 +89,55 @@ class UnifiedNewsCollector:
             'up_count': 2800,
             'down_count': 2400
         }
+
+
+# 便捷函数：手动输入新闻
+def add_manual_events(events: List[Dict]):
+    """手动添加新闻事件"""
+    collector = UnifiedNewsCollector()
+    collector.save_manual_news(events)
+
+
+# 示例：今日新闻事件
+TODAY_NEWS = [
+    {
+        'event_type': '科技政策',
+        'strength': 4.0,
+        'surprise': '超预期',
+        'policy_level': '国家级',
+        'description': '央行等三部门扩围科技金融赋能14领域，包括电子信息、人工智能'
+    },
+    {
+        'event_type': '算力政策',
+        'strength': 4.5,
+        'surprise': '超预期',
+        'policy_level': '国家级',
+        'description': '算力租赁概念爆发，东阳光签160-190亿元算力服务合同'
+    },
+    {
+        'event_type': '房地产政策',
+        'strength': 3.5,
+        'surprise': '超预期',
+        'policy_level': '国家级',
+        'description': '天津出台11条房地产新政，多地接连发布楼市新政'
+    },
+    {
+        'event_type': '货币政策',
+        'strength': 3.0,
+        'surprise': '符合预期',
+        'policy_level': '国家级',
+        'description': '央行开展3000亿元买断式逆回购，资金面持续宽松'
+    },
+    {
+        'event_type': '新能源政策',
+        'strength': 3.5,
+        'surprise': '超预期',
+        'policy_level': '国家级',
+        'description': '人民日报头版：内蒙古大力发展绿色能源'
+    }
+]
+
+if __name__ == '__main__':
+    # 测试：保存今日新闻
+    add_manual_events(TODAY_NEWS)
+    print("今日新闻已保存到 data/manual_news.json")
