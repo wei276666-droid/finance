@@ -1,0 +1,874 @@
+"""
+V23.44 融合版 = V23.39(特殊事件二叉树+滚动数据) + V23.43(β放大+自动学习)
+修复内容:
+1. β缩放因子从0.4提升到0.7
+2. 保留特殊事件二叉树模型
+3. 保留自动学习模块
+4. 优化回调检测
+5. 添加下跌事件库
+"""
+
+import numpy as np
+from collections import deque
+from datetime import datetime, timedelta
+import pickle
+import warnings
+warnings.filterwarnings('ignore')
+
+
+# ========== 1. 滚动市场数据存储器 ==========
+class RollingMarketData:
+    def __init__(self, window_days=30):
+        self.window_days = window_days
+        self.sector_returns = {}
+        self.market_breadth = deque(maxlen=window_days)
+        self.northbound_flow = deque(maxlen=window_days)
+        self.fear_greed_index = deque(maxlen=window_days)
+        self.dates = deque(maxlen=window_days)
+        self.up_count_history = deque(maxlen=window_days)
+        self.down_count_history = deque(maxlen=window_days)
+    
+    def update(self, date, sector_returns, market_breadth, northbound_flow, 
+               fear_greed_index, up_count=None, down_count=None):
+        for sector, ret in sector_returns.items():
+            if sector not in self.sector_returns:
+                self.sector_returns[sector] = deque(maxlen=self.window_days)
+            self.sector_returns[sector].append(ret)
+        
+        if market_breadth is not None:
+            self.market_breadth.append(market_breadth)
+        if northbound_flow is not None:
+            self.northbound_flow.append(northbound_flow)
+        if fear_greed_index is not None:
+            self.fear_greed_index.append(fear_greed_index)
+        if up_count is not None:
+            self.up_count_history.append(up_count)
+        if down_count is not None:
+            self.down_count_history.append(down_count)
+        
+        self.dates.append(date)
+    
+    def get_consecutive_gains(self, sector, threshold=1.0):
+        returns = self.sector_returns.get(sector, [])
+        if len(returns) < 2:
+            return 0
+        count = 0
+        for ret in reversed(returns):
+            if ret > threshold:
+                count += 1
+            else:
+                break
+        return count
+    
+    def get_prev_day_up_count(self):
+        if len(self.up_count_history) >= 1:
+            return self.up_count_history[-1]
+        return 0
+    
+    def get_prev_day_breadth(self):
+        if len(self.market_breadth) >= 1:
+            return self.market_breadth[-1]
+        return 0.5
+
+
+# ========== 2. 特殊事件二叉树模型（优化） ==========
+class SpecialEventTree:
+    """
+    特殊事件二叉树 - 基于历史统计规律自动匹配下跌预判
+    """
+    
+    def __init__(self):
+        self.downturn_patterns = {
+            '科技暴涨后回调': {
+                'trigger': {'tech_gain': 3.0, 'breadth': 0.55},
+                'severity': 'moderate',
+                'expected_change': -0.8,
+                'affected_sectors': ['半导体及元件', '计算机应用', '通信设备', '电子'],
+                'confidence': 0.75
+            },
+            '普涨后回调': {
+                'trigger': {'up_count': 5000},
+                'severity': 'mild',
+                'expected_change': -0.5,
+                'affected_sectors': ['前期热门', '商业航天', '军工信息化'],
+                'confidence': 0.65
+            },
+            '获利了结轮动': {
+                'trigger': {'轮动': True},
+                'severity': 'moderate',
+                'expected_change': -0.6,
+                'affected_sectors': ['前期大涨科技股', '商业航天'],
+                'rotation_up': ['煤炭开采加工', '医药生物', '电力设备'],
+                'confidence': 0.70
+            },
+            '节前避险': {
+                'trigger': {'days_to_holiday': 3},
+                'severity': 'mild',
+                'expected_change': -0.3,
+                'affected_sectors': ['科技成长', '小金属', '能源金属'],
+                'confidence': 0.55
+            }
+        }
+    
+    def match(self, prev_day_data, rolling_data):
+        matched = []
+        
+        tech_gain = max([
+            prev_day_data.get('半导体及元件', 0),
+            prev_day_data.get('计算机应用', 0),
+            prev_day_data.get('通信设备', 0)
+        ])
+        prev_breadth = rolling_data.get_prev_day_breadth() if rolling_data else 0.5
+        
+        if tech_gain > 3.0 and prev_breadth > 0.55:
+            matched.append(self.downturn_patterns['科技暴涨后回调'])
+        
+        prev_up_count = rolling_data.get_prev_day_up_count() if rolling_data else 0
+        if prev_up_count > 5000:
+            matched.append(self.downturn_patterns['普涨后回调'])
+        
+        return matched
+    
+    def apply_downturn(self, predictions, matched_patterns):
+        for pattern in matched_patterns:
+            for sector in pattern.get('affected_sectors', []):
+                for p in predictions['top_gainers']:
+                    if sector in p['sector']:
+                        original = p['prediction']
+                        p['prediction'] = round(original * pattern['expected_change'] / 3, 2)
+                        p['special_downturn'] = True
+                        p['downturn_reason'] = pattern
+            
+            for sector in pattern.get('rotation_up', []):
+                for p in predictions['top_gainers']:
+                    if sector in p['sector']:
+                        p['prediction'] = round(p['prediction'] * 1.2, 2)
+        
+        predictions['top_gainers'].sort(key=lambda x: x['prediction'], reverse=True)
+        predictions['top_losers'].sort(key=lambda x: x['prediction'])
+        
+        return predictions
+
+
+# ========== 3. 自动学习模块 ==========
+class AutoBetaLearner:
+    def __init__(self):
+        self.current_beta = {}
+    
+    def get_beta(self, event_type, sector, default_beta=0.5):
+        key = f"{event_type}|{sector}"
+        return self.current_beta.get(key, default_beta)
+    
+    def auto_update(self, event_type, sector, event_score, predicted_impact, actual_gain, date):
+        if event_score <= 0:
+            return
+        key = f"{event_type}|{sector}"
+        actual_beta = actual_gain / (event_score / 3)
+        actual_beta = max(-3.0, min(3.0, actual_beta))
+        old_beta = self.current_beta.get(key, 0.5)
+        new_beta = old_beta * 0.7 + actual_beta * 0.3
+        self.current_beta[key] = round(new_beta, 3)
+
+
+class AutoCorrectionLearner:
+    def __init__(self):
+        self.correction_history = deque(maxlen=50)
+    
+    def get_factor(self, prev_gain, prev_breadth, current_breadth, northbound_change):
+        if prev_gain > 3.0 and northbound_change < -50 and current_breadth < 0.45:
+            return 0.5
+        elif prev_gain > 2.0 and current_breadth < 0.5:
+            return 0.7
+        else:
+            return 1.0
+
+
+# ========== 4. 滚动校准器 ==========
+class RollingCalibrator:
+    def __init__(self, window_days=10):
+        self.window_days = window_days
+        self.history = deque(maxlen=window_days)
+        self.recent_style = 'growth'
+        self.market_breadth_history = deque(maxlen=10)
+        self.northbound_history = deque(maxlen=10)
+        self.actual_market_breadth = deque(maxlen=5)
+        self.fear_greed_index = 50
+        self.set_initial_breadth(0.5)
+    
+    def add_observation(self, date, events, gainers, losers, market_breadth=None, northbound_flow=None, actual_breadth=None):
+        self.history.append({'date': date, 'events': events, 'gainers': gainers[:5], 'losers': losers[:5]})
+        if market_breadth is not None:
+            self.market_breadth_history.append(market_breadth)
+        if northbound_flow is not None:
+            self.northbound_history.append(northbound_flow)
+        if actual_breadth is not None:
+            self.actual_market_breadth.append(actual_breadth)
+            if actual_breadth > 0.7:
+                self.fear_greed_index = min(100, self.fear_greed_index + 8)
+            elif actual_breadth < 0.3:
+                self.fear_greed_index = max(0, self.fear_greed_index - 8)
+        self._update_style()
+    
+    def _update_style(self):
+        if len(self.history) < 3:
+            return
+        up_freq = {}
+        for day in self.history:
+            for sector in day['gainers']:
+                up_freq[sector] = up_freq.get(sector, 0) + 1
+        growth_score = sum([up_freq.get(s, 0) for s in ['电子', '计算机', '通信', '传媒', '电力设备']])
+        value_score = sum([up_freq.get(s, 0) for s in ['银行', '煤炭', '钢铁', '房地产']])
+        defensive_score = sum([up_freq.get(s, 0) for s in ['公用事业', '食品饮料', '医药生物']])
+        if growth_score > value_score and growth_score > defensive_score:
+            self.recent_style = 'growth'
+        elif value_score > defensive_score:
+            self.recent_style = 'value'
+        else:
+            self.recent_style = 'defensive'
+    
+    def get_style_weight(self, sector, is_up=True):
+        style_config = {
+            'growth': {'up': ['电子', '计算机', '通信', '传媒', '电力设备', '医药生物'], 'down': ['煤炭', '钢铁', '银行', '房地产']},
+            'value': {'up': ['银行', '煤炭', '钢铁', '房地产', '建筑装饰'], 'down': ['电子', '计算机', '通信', '传媒']},
+            'defensive': {'up': ['公用事业', '食品饮料', '医药生物', '农林牧渔'], 'down': ['有色金属', '基础化工', '钢铁']}
+        }
+        style = self.recent_style
+        if is_up:
+            if sector in style_config.get(style, {}).get('up', []):
+                return 1.15
+        else:
+            if sector in style_config.get(style, {}).get('down', []):
+                return 1.1
+        return 1.0
+    
+    def get_rolling_beta_adjustment(self, event_type, sector):
+        if len(self.history) < 5:
+            return 1.0
+        return 1.0
+    
+    def get_market_state(self):
+        if len(self.actual_market_breadth) >= 2:
+            avg_breadth = np.mean(list(self.actual_market_breadth)[-2:])
+            if avg_breadth > 0.65:
+                return 'bull'
+            elif avg_breadth < 0.35:
+                return 'bear'
+            else:
+                return 'range'
+        if len(self.market_breadth_history) >= 3:
+            avg_breadth = np.mean(list(self.market_breadth_history)[-3:])
+            if avg_breadth > 0.60:
+                return 'bull'
+            elif avg_breadth < 0.35:
+                return 'bear'
+        return 'range'
+    
+    def get_incremental_capital_factor(self):
+        state = self.get_market_state()
+        if state == 'bull':
+            return 0.75
+        elif state == 'bear':
+            return 0.20
+        else:
+            return 0.50
+    
+    def get_friction_cost(self):
+        state = self.get_market_state()
+        if state == 'bull':
+            return 0.96
+        elif state == 'bear':
+            return 0.80
+        else:
+            return 0.90
+    
+    def get_max_single_down(self):
+        state = self.get_market_state()
+        if state == 'bull':
+            return -0.5
+        elif state == 'bear':
+            return -1.0
+        else:
+            return -0.6
+    
+    def get_victim_multiplier(self):
+        state = self.get_market_state()
+        if state == 'bull':
+            return 3
+        elif state == 'bear':
+            return 7
+        else:
+            return 5
+    
+    def get_macro_base(self, northbound_flow=None):
+        if northbound_flow is not None:
+            if northbound_flow < -100:
+                return -0.065
+            elif northbound_flow < -50:
+                return -0.03
+            elif northbound_flow < 0:
+                return -0.01
+            elif northbound_flow > 100:
+                return 0.08
+            elif northbound_flow > 50:
+                return 0.03
+            else:
+                return 0.01
+        
+        state = self.get_market_state()
+        if state == 'bull':
+            return 0.05
+        elif state == 'bear':
+            return -0.05
+        else:
+            return 0.02
+    
+    def get_fear_greed_multiplier(self):
+        fg = self.fear_greed_index
+        if fg > 70:
+            return 1.2
+        elif fg < 30:
+            return 0.8
+        else:
+            return 1.0
+    
+    def set_initial_breadth(self, breadth):
+        self.market_breadth_history.append(breadth)
+        self.actual_market_breadth.append(breadth)
+
+
+# ========== 5. 周末新闻处理器 ==========
+class WeekendNewsProcessor:
+    def process_weekend_news(self, news_list, current_date):
+        processed = []
+        for news in news_list:
+            strength = news['strength']
+            desc = news.get('description', '')
+            if '周六' in desc or '星期六' in desc:
+                strength *= 0.9
+            elif '周日' in desc or '星期日' in desc:
+                strength *= 0.8
+            processed.append({**news, 'strength': round(strength, 2)})
+        
+        event_groups = {}
+        for news in processed:
+            et = news['event_type']
+            if et not in event_groups:
+                event_groups[et] = []
+            event_groups[et].append(news)
+        
+        result = []
+        for et, group in event_groups.items():
+            if len(group) >= 2:
+                base_strength = max([n['strength'] for n in group])
+                enhanced_strength = min(1.0, base_strength * (1 + 0.1 * (len(group) - 1)))
+                group[0]['strength'] = round(enhanced_strength, 2)
+                result.append(group[0])
+            else:
+                result.append(group[0])
+        return result
+
+
+# ========== 6. 边际效用跟踪器 ==========
+class DiminishingReturnsTracker:
+    def __init__(self):
+        self.event_counts = {}
+    
+    def update(self, event_type):
+        if event_type not in self.event_counts:
+            self.event_counts[event_type] = 0
+        self.event_counts[event_type] += 1
+    
+    def get_multiplier(self, event_type):
+        count = self.event_counts.get(event_type, 0)
+        if count == 0 or count == 1:
+            return 1.0
+        elif count == 2:
+            return 0.7
+        elif count == 3:
+            return 0.5
+        elif count == 4:
+            return 0.3
+        else:
+            return 0.2
+
+
+# ========== 7. 预期差调整器 ==========
+class ExpectationAdjuster:
+    def __init__(self):
+        self.thresholds = {
+            '国防军工': 2.0,
+            '通信设备': 1.8,
+            '半导体及元件': 1.5,
+            '计算机应用': 1.5,
+            '油气开采及服务': 1.5,
+        }
+        self.event_sensitivity = {
+            '航天日': 0.6,
+            '军工政策': 0.6,
+            '科技政策': 0.4,
+            '通信政策': 0.4,
+        }
+    
+    def get_adjustment_factor(self, sector, event_type, pre_event_gain):
+        if pre_event_gain is None:
+            return 1.0
+        
+        threshold = self.thresholds.get(sector, 2.0)
+        sensitivity = self.event_sensitivity.get(event_type, 0.3)
+        
+        if pre_event_gain <= threshold:
+            return 1.0
+        
+        excess = (pre_event_gain - threshold) / 3
+        factor = max(0.3, 1.0 - sensitivity - excess * 0.2)
+        
+        return round(factor, 2)
+
+
+# ========== 8. 同花顺板块映射 ==========
+THS_MODEL_MAPPING = {
+    '煤炭': '煤炭开采加工', '石油石化': '油气开采及服务', '公用事业': '电力',
+    '电力设备': '电力设备', '有色金属': '工业金属', '钢铁': '钢铁',
+    '建筑材料': '建筑材料', '基础化工': '化学制品', '建筑装饰': '建筑装饰',
+    '机械设备': '专用设备', '交通运输': '港口航运', '汽车': '汽车零部件',
+    '国防军工': '国防军工', '轻工制造': '包装印刷', '电子': '半导体及元件',
+    '计算机': '计算机应用', '通信': '通信设备', '食品饮料': '食品加工制造',
+    '家用电器': '白色家电', '纺织服饰': '服装家纺', '商贸零售': '零售',
+    '美容护理': '美容护理', '银行': '银行', '非银金融': '证券',
+    '传媒': '传媒', '医药生物': '化学制药', '社会服务': '旅游及酒店',
+    '房地产': '房地产开发', '农林牧渔': '养殖业', '环保': '环保',
+    '小金属': '小金属', '能源金属': '能源金属', '电池': '电池',
+}
+
+MODEL_TO_THS = {k: v for k, v in THS_MODEL_MAPPING.items()}
+THS_TO_MODEL = {v: k for k, v in THS_MODEL_MAPPING.items()}
+
+
+# ========== 9. V23.44 融合版主类 ==========
+class FinancialPredictorV2344:
+    def __init__(self):
+        self.version = "V23.44"
+        self.calibration_date = "2026-05-06"
+        
+        self.sectors = [
+            '银行', '非银金融', '房地产', '建筑装饰', '电子', '计算机', '通信', '传媒', '国防军工',
+            '食品饮料', '医药生物', '家用电器', '汽车', '商贸零售', '社会服务', '美容护理',
+            '电力设备', '有色金属', '基础化工', '钢铁', '煤炭', '建筑材料', '机械设备', '石油石化', '环保',
+            '农林牧渔', '交通运输', '公用事业', '轻工制造', '纺织服饰', '综合',
+            '小金属', '能源金属', '电池',
+        ]
+        
+        self.sector_groups = {
+            '科技成长': ['电子', '计算机', '通信', '传媒', '国防军工'],
+            '消费': ['食品饮料', '医药生物', '家用电器', '汽车', '商贸零售', '社会服务', '美容护理'],
+            '周期': ['有色金属', '基础化工', '钢铁', '煤炭', '建筑材料', '石油石化', '环保', '小金属', '能源金属'],
+            '新能源': ['电力设备', '电池'],
+            '金融地产': ['银行', '非银金融', '房地产', '建筑装饰'],
+            '稳定': ['公用事业', '交通运输', '农林牧渔', '轻工制造', '纺织服饰', '综合']
+        }
+        
+        self.event_driver_map = {
+            '算力政策': 'A_直接政策', '新能源政策': 'A_直接政策', '节能降碳': 'A_直接政策',
+            '房地产政策': 'A_直接政策', '基建刺激': 'A_直接政策', '农业政策': 'A_直接政策',
+            '战争缓和': 'C_事件冲击', '战争爆发': 'C_事件冲击', '地缘政治': 'C_事件冲击',
+            '宏观数据': 'B_预期博弈', '通信政策': 'A_直接政策', '电子政策': 'A_直接政策',
+            '业绩暴雷': 'D_特殊利空', '航天日': 'A_直接政策', '军工政策': 'A_直接政策',
+            '中东局势': 'C_事件冲击', '原油价格上涨': 'C_事件冲击', '货币政策': 'B_预期博弈',
+            '消费刺激': 'A_直接政策', '科技政策': 'A_直接政策', '能源政策': 'A_直接政策',
+            '证券政策': 'B_预期博弈', '量子科技': 'A_直接政策',
+            '市场回调': 'C_事件冲击', '获利了结': 'C_事件冲击',
+            '银行利空': 'D_特殊利空', '油价下跌': 'C_事件冲击',
+        }
+        
+        self.driver_types = {
+            'A_直接政策': 0.9,
+            'B_预期博弈': 0.85,
+            'C_事件冲击': 0.8,
+            'D_特殊利空': 1.2
+        }
+        
+        self.policy_levels = {'国际级': 1.0, '国家级': 0.8, '部委级': 0.6}
+        self.surprise_factors = {'远超预期': 1.15, '超预期': 1.05, '符合预期': 1.0, '不及预期': 0.85}
+        
+        # 【核心修复】β缩放因子 0.4 → 0.7
+        self.BETA_SCALE = 0.7
+        
+        self.event_beta = self._get_scaled_beta()
+        
+        self.capital_teeter_totter = {
+            '科技成长': ['非银金融', '银行'],
+            '周期': ['银行', '非银金融'],
+            '新能源': ['钢铁', '煤炭'],
+        }
+        
+        self.sector_vulnerability = self._get_vulnerability()
+        self.macro_sensitivity = self._get_macro_sensitivity()
+        self.retail_ratio = {s: 0.6 for s in self.sectors}
+        
+        self.capital_params = {'friction_cost': 0.88, 'max_single_up': 3.0, 'max_single_down': -1.6}
+        
+        self.rolling_calibrator = RollingCalibrator(window_days=10)
+        self.weekend_processor = WeekendNewsProcessor()
+        self.diminishing_tracker = DiminishingReturnsTracker()
+        self.expectation_adjuster = ExpectationAdjuster()
+        
+        # V23.44新增：特殊事件 + 滚动数据 + 自动学习
+        self.rolling_market_data = RollingMarketData(window_days=30)
+        self.special_event_tree = SpecialEventTree()
+        self.beta_learner = AutoBetaLearner()
+        self.correction_learner = AutoCorrectionLearner()
+        
+        self.industry_chain = self._get_industry_chain()
+    
+    def _get_scaled_beta(self):
+        """缩放后的β系数（scale=0.7）"""
+        scale = self.BETA_SCALE
+        
+        base_beta = {
+            # 正向事件
+            '科技政策': {'电子': 1.2, '计算机': 0.5, '通信': 0.5},
+            '算力政策': {'电子': 1.2, '计算机': 0.5, '通信': 0.5, '电力设备': 0.6},
+            '新能源政策': {'电力设备': 1.4, '小金属': 1.2, '能源金属': 1.2, '电池': 1.0, '汽车': 0.8},
+            '货币政策': {'银行': 0.5, '证券': 0.6},
+            '房地产政策': {'房地产': 1.0, '建筑材料': 0.6, '家用电器': 0.5},
+            '消费刺激': {'食品饮料': 0.6, '家用电器': 0.7, '汽车': 0.6},
+            '宏观数据': {'银行': 0.3, '证券': 0.3, '食品饮料': 0.3},
+            '中东局势': {'石油石化': 1.0, '煤炭': 0.6, '国防军工': 0.3},
+            '原油价格上涨': {'石油石化': 1.2, '煤炭': 0.7},
+            
+            # 负向事件（新增）
+            '银行利空': {'银行': -0.8},
+            '油价下跌': {'石油石化': -1.0, '煤炭': -0.5},
+            '消费利空': {'食品饮料': -0.6, '家用电器': -0.4},
+            '市场回调': {'电子': -0.6, '计算机': -0.4, '通信': -0.4},
+            '获利了结': {'科技成长': -0.4},
+        }
+        
+        scaled_beta = {}
+        for event, sectors in base_beta.items():
+            scaled_beta[event] = {}
+            for sector, beta in sectors.items():
+                scaled_beta[event][sector] = round(beta * scale, 2)
+        
+        return scaled_beta
+    
+    def get_beta(self, event_type, sector):
+        """获取动态β（支持自动学习）"""
+        default = self.event_beta.get(event_type, {}).get(sector, 0.3)
+        return self.beta_learner.get_beta(event_type, sector, default)
+    
+    def _get_vulnerability(self):
+        vuln = {s: 0.4 for s in self.sectors}
+        vuln['钢铁'] = 0.65
+        vuln['基础化工'] = 0.5
+        vuln['有色金属'] = 0.45
+        vuln['石油石化'] = 0.2
+        vuln['煤炭'] = 0.25
+        vuln['银行'] = 0.15
+        vuln['小金属'] = 0.3
+        vuln['能源金属'] = 0.3
+        vuln['电池'] = 0.35
+        return vuln
+    
+    def _get_macro_sensitivity(self):
+        return {s: 0.3 for s in self.sectors}
+    
+    def _get_industry_chain(self):
+        return {
+            '新能源政策': {
+                'name': '新能源汽车产业链',
+                'path': '上游锂矿/化工 → 中游电池/设备 → 下游整车',
+                'upstream': ['有色金属', '基础化工', '小金属', '能源金属'],
+                'midstream': ['电力设备', '电池'],
+                'downstream': ['汽车']
+            },
+            '算力政策': {
+                'name': 'AI算力产业链',
+                'path': '上游芯片/设备 → 中游算力建设 → 下游应用',
+                'upstream': ['电子'],
+                'midstream': ['通信', '计算机'],
+                'downstream': ['传媒']
+            }
+        }
+    
+    def calculate_event_score(self, event_type, strength, surprise, policy_level):
+        level_factor = self.policy_levels.get(policy_level, 0.6)
+        surprise_factor = self.surprise_factors.get(surprise, 1.0)
+        driver_type = self.event_driver_map.get(event_type, 'A_直接政策')
+        driver_factor = self.driver_types.get(driver_type, 1.0)
+        return round(strength * surprise_factor * level_factor * driver_factor, 2)
+    
+    def is_weekday_prediction(self, target_date=None):
+        if target_date is None:
+            target_date = datetime.now()
+        if target_date.weekday() == 0:
+            return False
+        return target_date.weekday() < 4
+    
+    def _apply_capital_teeter_totter(self, positive_impacts, negative_impacts):
+        strong_styles = set()
+        for sector in positive_impacts.keys():
+            for style, members in self.sector_groups.items():
+                if sector in members:
+                    strong_styles.add(style)
+        for style in strong_styles:
+            if style in self.capital_teeter_totter:
+                for target in self.capital_teeter_totter[style]:
+                    if target in negative_impacts:
+                        negative_impacts[target] = round(negative_impacts[target] - 0.3, 2)
+                    else:
+                        negative_impacts[target] = -0.3
+        return negative_impacts
+    
+    def after_prediction_update(self, event_type, sector, event_score, predicted_impact, actual_gain, date):
+        """预测后自动学习"""
+        self.beta_learner.auto_update(event_type, sector, event_score, predicted_impact, actual_gain, date)
+    
+    def predict(self, events, northbound_flow=None, target_date=None, 
+                pre_weekend_gains=None, market_breadth=None, fear_greed_index=None,
+                up_count=None, down_count=None, prev_day_returns=None):
+        
+        if self.is_weekday_prediction(target_date):
+            up_beta, down_beta, drain_mul, drain_int = 1.0, 0.5, 0.6, 0.7
+            model_name = "周内模型（侧重上涨）"
+        else:
+            up_beta, down_beta, drain_mul, drain_int = 0.8, 1.2, 1.0, 1.0
+            model_name = "周末模型（涨跌平衡）"
+        
+        processed_events = self.weekend_processor.process_weekend_news(events, target_date or datetime.now())
+        
+        for event in processed_events:
+            if event['event_type'] in ['中东局势', '货币政策', '房地产政策']:
+                self.diminishing_tracker.update(event['event_type'])
+        
+        event_scores = []
+        for event in processed_events:
+            score = self.calculate_event_score(event['event_type'], event['strength'],
+                                               event['surprise'], event.get('policy_level', '部委级'))
+            if event['event_type'] in ['中东局势', '货币政策', '房地产政策']:
+                score = score * self.diminishing_tracker.get_multiplier(event['event_type'])
+            event_scores.append({'event': event['event_type'], 'score': score, 'decay': 1.0})
+        
+        sector_impacts = {}
+        sector_sources = {}
+        
+        for sector in self.sectors:
+            total = 0
+            sources = []
+            for es in event_scores:
+                beta = self.get_beta(es['event'], sector)
+                if beta != 0:
+                    if beta > 0:
+                        beta = beta * up_beta
+                    else:
+                        beta = beta * down_beta
+                    
+                    if pre_weekend_gains and target_date:
+                        ths_name = MODEL_TO_THS.get(sector, sector)
+                        pre_gain = pre_weekend_gains.get(ths_name, 0)
+                        if pre_gain > 0:
+                            adj_factor = self.expectation_adjuster.get_adjustment_factor(
+                                ths_name, es['event'], pre_gain
+                            )
+                            beta = beta * adj_factor
+                    
+                    impact = beta * (es['score'] / 3) * es.get('decay', 1.0)
+                    total += impact
+                    if abs(impact) > 0.005:
+                        sources.append({'event': es['event'], 'beta': round(beta, 2), 'impact': impact})
+            if abs(total) > 0.03:
+                sector_impacts[sector] = total
+                if sources:
+                    sector_sources[sector] = sources
+        
+        macro_base = self.rolling_calibrator.get_macro_base(northbound_flow)
+        for s in sector_impacts:
+            sector_impacts[s] += macro_base
+        
+        fg_multiplier = self.rolling_calibrator.get_fear_greed_multiplier()
+        for s in sector_impacts:
+            if sector_impacts[s] > 0:
+                sector_impacts[s] *= fg_multiplier
+        
+        # 回调检测优化
+        correction_factor = 1.0
+        if prev_day_returns and market_breadth:
+            max_gain = max(prev_day_returns.values()) if prev_day_returns else 0
+            northbound_change = northbound_flow - 50 if northbound_flow else 0
+            factor = self.correction_learner.get_factor(
+                max_gain, 0.5, market_breadth, northbound_change
+            )
+            correction_factor = factor
+            if factor < 1.0:
+                for s in ['电子', '计算机', '通信']:
+                    if s in sector_impacts:
+                        sector_impacts[s] *= factor
+        
+        positive = {s: v for s, v in sector_impacts.items() if v > 0}
+        negative_events = {s: v for s, v in sector_impacts.items() if v < 0}
+        
+        for s, v in positive.items():
+            retail = self.retail_ratio.get(s, 0.6)
+            positive[s] = round(v * (1 + retail * 0.2), 2)
+        
+        style_weight = self.rolling_calibrator.get_style_weight
+        for s in positive:
+            positive[s] = round(positive[s] * style_weight(s, is_up=True), 2)
+        
+        total_inflow = sum(positive.values())
+        total_outflow = total_inflow * self.capital_params['friction_cost'] * drain_mul
+        
+        beneficiary = set(positive.keys())
+        all_victims = set(self.sectors) - beneficiary - set(negative_events.keys())
+        high_vuln = [s for s in all_victims if self.sector_vulnerability.get(s, 0) > 0.7]
+        victims = high_vuln if high_vuln else list(all_victims)[:15]
+        vuln_sum = sum([self.sector_vulnerability.get(s, 1.0) for s in victims]) if victims else 1
+        
+        negative = {}
+        for sector in victims:
+            drain_share = self.sector_vulnerability.get(sector, 1.0) / vuln_sum
+            base_drain = -total_outflow * drain_share
+            macro_adj = self.rolling_calibrator.get_macro_base() * self.macro_sensitivity.get(sector, 0.5)
+            final = (base_drain + macro_adj) * drain_int * style_weight(sector, is_up=False)
+            final = max(final, self.capital_params['max_single_down'])
+            negative[sector] = round(final, 2)
+        
+        for s, v in negative_events.items():
+            negative[s] = round(v, 2)
+        
+        negative = self._apply_capital_teeter_totter(positive, negative)
+        
+        all_impacts = {**positive, **negative}
+        for s in self.sectors:
+            if s not in all_impacts:
+                all_impacts[s] = round(macro_base, 2)
+        
+        sorted_impacts = sorted(all_impacts.items(), key=lambda x: x[1], reverse=True)
+        pos_list = [(s, v) for s, v in sorted_impacts if v > 0.02]
+        neg_list = [(s, v) for s, v in sorted_impacts if v < -0.02]
+        
+        ths_gainers = []
+        for s, v in pos_list[:20]:
+            ths_name = MODEL_TO_THS.get(s, s)
+            ths_gainers.append({'sector': ths_name, 'prediction': round(v, 2)})
+        
+        ths_losers = []
+        for s, v in neg_list[:10]:
+            ths_name = MODEL_TO_THS.get(s, s)
+            ths_losers.append({'sector': ths_name, 'prediction': round(v, 2)})
+        
+        if len(ths_gainers) < 10:
+            for s in self.sectors[:20]:
+                if len(ths_gainers) >= 10:
+                    break
+                ths_name = MODEL_TO_THS.get(s, s)
+                if ths_name not in [p['sector'] for p in ths_gainers]:
+                    ths_gainers.append({'sector': ths_name, 'prediction': 0.05})
+        
+        # 特殊事件匹配
+        if prev_day_returns is not None:
+            prev_day_data = {
+                '半导体及元件': prev_day_returns.get('半导体及元件', 0),
+                '计算机应用': prev_day_returns.get('计算机应用', 0),
+                '通信设备': prev_day_returns.get('通信设备', 0),
+                'market_breadth': market_breadth,
+                'up_count': up_count,
+            }
+            matched_patterns = self.special_event_tree.match(prev_day_data, self.rolling_market_data)
+            if matched_patterns:
+                ths_gainers = self.special_event_tree.apply_downturn(
+                    {'top_gainers': ths_gainers, 'top_losers': ths_losers}, 
+                    matched_patterns
+                )['top_gainers']
+        
+        # 更新滚动市场数据
+        if prev_day_returns is not None:
+            self.rolling_market_data.update(
+                target_date, prev_day_returns, market_breadth, northbound_flow,
+                fear_greed_index, up_count, down_count
+            )
+        
+        synergy = []
+        sector_event_counts = {}
+        for es in event_scores:
+            for sector, beta in self.event_beta.get(es['event'], {}).items():
+                if beta > 0 and sector in positive:
+                    sector_event_counts[sector] = sector_event_counts.get(sector, 0) + 1
+        
+        for sector, count in sector_event_counts.items():
+            if count >= 2:
+                synergy.append({
+                    'sector': MODEL_TO_THS.get(sector, sector),
+                    'event_count': count,
+                    'synergy_type': '多重利好叠加' if count >= 3 else '双重利好'
+                })
+        
+        chain = []
+        for es in event_scores:
+            if es['event'] in self.industry_chain:
+                ic = self.industry_chain[es['event']]
+                affected = []
+                for pos in ['upstream', 'midstream', 'downstream']:
+                    for sec in ic.get(pos, []):
+                        if sec in positive:
+                            affected.append({
+                                'position': pos,
+                                'sector': MODEL_TO_THS.get(sec, sec),
+                                'impact': positive[sec]
+                            })
+                if affected:
+                    chain.append({
+                        'event': es['event'],
+                        'chain_name': ic['name'],
+                        'path': ic['path'],
+                        'affected_sectors': affected
+                    })
+        
+        return {
+            'top_gainers': ths_gainers,
+            'top_losers': ths_losers,
+            'positive_sectors': len(pos_list),
+            'negative_sectors': len(neg_list),
+            'event_scores': [{'event': e['event'], 'score': e['score']} for e in event_scores],
+            'sector_sources': sector_sources,
+            'synergy': synergy,
+            'chain': chain,
+            'version': self.version,
+            'model_name': model_name,
+            'current_style': self.rolling_calibrator.recent_style,
+            'market_state': self.rolling_calibrator.get_market_state(),
+            'macro_base': macro_base,
+            'fear_greed_index': self.rolling_calibrator.fear_greed_index,
+            'event_counts': self.diminishing_tracker.event_counts.copy(),
+            'northbound_flow': northbound_flow,
+            'correction_factor': correction_factor
+        }
+
+
+def save_model():
+    model = FinancialPredictorV2344()
+    with open('V23.44_fusion.pkl', 'wb') as f:
+        pickle.dump(model, f)
+    
+    print("=" * 85)
+    print("✅ V23.44 融合版已保存")
+    print("=" * 85)
+    print(f"   版本: {model.version}")
+    print(f"   β缩放因子: {model.BETA_SCALE}")
+    print(f"   板块数量: {len(model.sectors)}个")
+    print("=" * 85)
+    print("   融合内容:")
+    print("     1. V23.39: 特殊事件二叉树 + 30天滚动数据")
+    print("     2. V23.43: β放大(0.7) + 自动学习 + 下跌事件")
+    print("=" * 85)
+    print("   核心改进:")
+    print("     - β缩放因子: 0.4 → 0.7 (+75%)")
+    print("     - 新增自动学习模块（β动态更新）")
+    print("     - 新增下跌事件库（银行利空、油价下跌等）")
+    print("     - 优化回调检测（增加资金流向判断）")
+    print("=" * 85)
+    return model
+
+
+if __name__ == "__main__":
+    save_model()
