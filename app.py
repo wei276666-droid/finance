@@ -1,5 +1,5 @@
 """
-app.py - Flask Web应用主程序
+app.py - Flask Web 应用主程序
 """
 
 import json
@@ -8,8 +8,15 @@ from datetime import datetime
 from flask import Flask, jsonify, render_template, request
 from flask_cors import CORS
 
+from module_a_news import UnifiedNewsCollector
+from module_b_predict import PredictEngine
+
 app = Flask(__name__)
 CORS(app)
+
+# 初始化模块
+news_collector = UnifiedNewsCollector()
+predict_engine = PredictEngine()
 
 # 数据目录
 DATA_DIR = 'data'
@@ -42,48 +49,52 @@ def index():
 @app.route('/api/predict', methods=['GET'])
 def get_predictions():
     """获取预测结果"""
-    weekday = datetime.now().weekday()
-    is_monday = weekday == 0
-    
-    if is_monday:
-        tech_base = 2.0
-    else:
-        tech_base = 1.5
-    
-    predictions_data = {
-        'top_gainers': [
-            {'sector': '半导体及元件', 'prediction': round(tech_base + 0.5, 2)},
-            {'sector': '计算机应用', 'prediction': round(tech_base + 0.2, 2)},
-            {'sector': '通信设备', 'prediction': round(tech_base, 2)},
-            {'sector': '电力设备', 'prediction': round(tech_base - 0.3, 2)},
-            {'sector': '房地产开发', 'prediction': round(tech_base - 0.5, 2)},
-        ],
-        'top_losers': [
-            {'sector': '银行', 'prediction': -0.5},
-            {'sector': '石油石化', 'prediction': -0.3},
-        ],
-        'update_time': datetime.now().strftime('%Y-%m-%d %H:%M'),
-        'summary': {
-            'positive_count': 5,
-            'negative_count': 2,
-            'macro_base': 0.02
-        }
-    }
-    
-    # 记录预测历史
-    history = load_history()
-    history.append({
-        'date': datetime.now().strftime('%Y-%m-%d'),
-        'timestamp': datetime.now().isoformat(),
-        'predictions': predictions_data['top_gainers']
-    })
-    save_history(history)
-    
-    return jsonify({'code': 0, 'data': predictions_data})
+    try:
+        # 1. 采集新闻
+        events = news_collector.fetch_and_process()
+        
+        # 2. 获取市场数据
+        market_data = news_collector.get_market_data()
+        
+        # 3. 执行预测
+        predictions = predict_engine.predict(
+            events=events,
+            northbound_flow=market_data.get('northbound_flow'),
+            market_breadth=market_data.get('market_breadth')
+        )
+        
+        # 4. 记录预测历史
+        today = datetime.now().strftime('%Y-%m-%d')
+        history = load_history()
+        history.append({
+            'date': today,
+            'timestamp': datetime.now().isoformat(),
+            'events': events[:5],
+            'predictions': predictions.get('top_gainers', [])[:10]
+        })
+        save_history(history)
+        
+        return jsonify({
+            'code': 0,
+            'data': {
+                'top_gainers': predictions.get('top_gainers', [])[:10],
+                'top_losers': predictions.get('top_losers', [])[:5],
+                'update_time': datetime.now().strftime('%Y-%m-%d %H:%M'),
+                'summary': {
+                    'positive_count': predictions.get('positive_sectors', 0),
+                    'negative_count': predictions.get('negative_sectors', 0),
+                    'macro_base': predictions.get('macro_base', 0),
+                    'event_count': len(events)
+                }
+            }
+        })
+    except Exception as e:
+        return jsonify({'code': -1, 'message': str(e)}), 500
 
 
 @app.route('/api/learn', methods=['POST'])
 def learn_from_actual():
+    """学习API - 记录实际数据"""
     try:
         data = request.get_json()
         date = data.get('date', datetime.now().strftime('%Y-%m-%d'))
