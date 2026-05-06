@@ -2,62 +2,368 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>金融预测</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>金融预测 - AI板块涨跌预测</title>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; padding: 16px; }
-        .container { max-width: 600px; margin: 0 auto; }
-        .header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); color: white; padding: 24px 20px; border-radius: 20px; margin-bottom: 16px; text-align: center; }
-        .card { background: white; border-radius: 16px; padding: 16px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
-        .card-title.up { border-left: 4px solid #e74c3c; padding-left: 10px; color: #e74c3c; margin-bottom: 12px; }
-        .card-title.down { border-left: 4px solid #27ae60; padding-left: 10px; color: #27ae60; margin-bottom: 12px; }
-        .stock-item { display: flex; justify-content: space-between; padding: 10px 8px; border-bottom: 1px solid #eee; }
-        .stock-change.up { color: #e74c3c; font-weight: 600; }
-        .stock-change.up::before { content: "+"; }
-        .stock-change.down { color: #27ae60; font-weight: 600; }
-        .refresh-btn { background: #1a1a2e; color: white; border: none; padding: 12px; width: 100%; border-radius: 30px; margin-top: 8px; cursor: pointer; }
-        .loading { text-align: center; padding: 40px; color: #999; }
-        .update-time { font-size: 11px; opacity: 0.7; margin-top: 8px; }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: #f0f2f5;
+            padding: 16px;
+        }
+        
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+        }
+        
+        /* 头部 */
+        .header {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: white;
+            padding: 24px 20px;
+            border-radius: 24px;
+            margin-bottom: 16px;
+            text-align: center;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+        
+        .header h1 {
+            font-size: 26px;
+            margin-bottom: 8px;
+            letter-spacing: 1px;
+        }
+        
+        .header p {
+            font-size: 12px;
+            opacity: 0.8;
+        }
+        
+        .update-time {
+            font-size: 11px;
+            opacity: 0.7;
+            margin-top: 10px;
+        }
+        
+        .market-stats {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 16px;
+            padding-top: 12px;
+            border-top: 1px solid rgba(255,255,255,0.2);
+        }
+        
+        .stat-item {
+            flex: 1;
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 20px;
+            font-weight: 700;
+        }
+        
+        .stat-label {
+            font-size: 10px;
+            opacity: 0.7;
+            margin-top: 4px;
+        }
+        
+        /* 卡片 */
+        .card {
+            background: white;
+            border-radius: 20px;
+            padding: 18px;
+            margin-bottom: 16px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        
+        .card-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 14px;
+            padding-left: 12px;
+            border-left: 4px solid;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .card-title.up {
+            border-left-color: #e74c3c;
+            color: #e74c3c;
+        }
+        
+        .card-title.down {
+            border-left-color: #27ae60;
+            color: #27ae60;
+        }
+        
+        .card-title .badge {
+            font-size: 12px;
+            background: #f0f0f0;
+            padding: 2px 8px;
+            border-radius: 20px;
+            font-weight: normal;
+        }
+        
+        /* 列表 */
+        .stock-list {
+            list-style: none;
+        }
+        
+        .stock-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 8px;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .stock-item:last-child {
+            border-bottom: none;
+        }
+        
+        .stock-name {
+            font-weight: 500;
+            font-size: 15px;
+        }
+        
+        .stock-change {
+            font-weight: 600;
+            font-size: 16px;
+        }
+        
+        .stock-change.up {
+            color: #e74c3c;
+        }
+        
+        .stock-change.up::before {
+            content: "+";
+        }
+        
+        .stock-change.down {
+            color: #27ae60;
+        }
+        
+        /* 加载状态 */
+        .loading {
+            text-align: center;
+            padding: 60px;
+            color: #999;
+        }
+        
+        .error {
+            background: #fff3f3;
+            color: #e74c3c;
+            padding: 16px;
+            border-radius: 12px;
+            text-align: center;
+        }
+        
+        /* 按钮 */
+        .refresh-btn {
+            background: #1a1a2e;
+            color: white;
+            border: none;
+            padding: 14px 24px;
+            border-radius: 40px;
+            width: 100%;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            margin-top: 8px;
+            transition: all 0.2s;
+        }
+        
+        .refresh-btn:active {
+            transform: scale(0.98);
+            background: #2a2a4e;
+        }
+        
+        /* 页脚 */
+        .footer {
+            text-align: center;
+            font-size: 11px;
+            color: #999;
+            padding: 20px;
+            line-height: 1.5;
+        }
+        
+        /* 空状态 */
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+        
+        /* 分割线 */
+        .divider {
+            height: 1px;
+            background: #eee;
+            margin: 8px 0;
+        }
     </style>
 </head>
 <body>
     <div class="container">
+        <!-- 头部 -->
         <div class="header">
             <h1>📊 金融预测</h1>
+            <p>基于AI的板块涨跌预测</p>
             <div class="update-time" id="updateTime">加载中...</div>
+            <div class="market-stats">
+                <div class="stat-item">
+                    <div class="stat-value" id="positiveCount">--</div>
+                    <div class="stat-label">上涨板块</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="negativeCount">--</div>
+                    <div class="stat-label">下跌板块</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="macroBase">--</div>
+                    <div class="stat-label">宏观基准</div>
+                </div>
+            </div>
         </div>
-        <div id="content" class="loading">加载中...</div>
-        <button class="refresh-btn" onclick="fetchData()">🔄 刷新</button>
+        
+        <!-- 内容区域 -->
+        <div id="content">
+            <div class="loading">加载中...</div>
+        </div>
+        
+        <!-- 刷新按钮 -->
+        <button class="refresh-btn" onclick="fetchData()">🔄 刷新数据</button>
+        
+        <!-- 页脚 -->
+        <div class="footer">
+            基于同花顺新闻 • AI模型预测<br>
+            投资有风险，决策需谨慎
+        </div>
     </div>
+    
     <script>
+        // API地址（使用相对路径，自动适配当前域名）
+        const API_BASE = '';
+        
         async function fetchData() {
-            document.getElementById('content').innerHTML = '<div class="loading">加载中...</div>';
+            const content = document.getElementById('content');
+            content.innerHTML = '<div class="loading">加载中...</div>';
+            
             try {
-                const resp = await fetch('/api/predict');
-                const result = await resp.json();
-                if (result.code === 0) {
+                const response = await fetch(`${API_BASE}/api/predict`);
+                const result = await response.json();
+                
+                if (result.code === 0 && result.data) {
                     renderData(result.data);
-                    document.getElementById('updateTime').innerHTML = '📅 更新于 ' + result.data.update_time;
+                    updateHeader(result.data);
+                } else {
+                    content.innerHTML = `<div class="error">❌ ${result.message || '数据加载失败'}</div>`;
                 }
-            } catch(e) {
-                document.getElementById('content').innerHTML = '<div class="loading">加载失败</div>';
+            } catch (err) {
+                console.error('Fetch error:', err);
+                content.innerHTML = '<div class="error">❌ 网络错误，请检查网络后重试</div>';
             }
         }
+        
+        function updateHeader(data) {
+            const updateTime = document.getElementById('updateTime');
+            const positiveCount = document.getElementById('positiveCount');
+            const negativeCount = document.getElementById('negativeCount');
+            const macroBase = document.getElementById('macroBase');
+            
+            if (data.update_time) {
+                updateTime.innerHTML = `📅 更新于 ${data.update_time}`;
+            }
+            
+            if (data.summary) {
+                positiveCount.innerHTML = data.summary.positive_count || 0;
+                negativeCount.innerHTML = data.summary.negative_count || 0;
+                macroBase.innerHTML = (data.summary.macro_base || 0) > 0 ? 
+                    `+${(data.summary.macro_base * 100).toFixed(1)}%` : 
+                    `${(data.summary.macro_base * 100).toFixed(1)}%`;
+            }
+        }
+        
         function renderData(data) {
-            let html = '<div class="card"><div class="card-title up">📈 上涨预测 TOP10</div>';
-            data.top_gainers.forEach(item => {
-                html += `<div class="stock-item"><span>${item.sector}</span><span class="stock-change up">${item.prediction}%</span></div>`;
-            });
-            html += '</div><div class="card"><div class="card-title down">📉 下跌预测 TOP5</div>';
-            data.top_losers.forEach(item => {
-                html += `<div class="stock-item"><span>${item.sector}</span><span class="stock-change down">${item.prediction}%</span></div>`;
-            });
-            html += '</div>';
+            let html = '';
+            
+            // 上涨板块
+            if (data.top_gainers && data.top_gainers.length > 0) {
+                html += `
+                    <div class="card">
+                        <div class="card-title up">
+                            📈 上涨预测 TOP${Math.min(data.top_gainers.length, 10)}
+                            <span class="badge">${data.top_gainers.length}个板块</span>
+                        </div>
+                        <ul class="stock-list">
+                            ${data.top_gainers.slice(0, 10).map(item => `
+                                <li class="stock-item">
+                                    <span class="stock-name">${escapeHtml(item.sector)}</span>
+                                    <span class="stock-change up">${item.prediction}%</span>
+                                </li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                `;
+            } else {
+                html += `
+                    <div class="card">
+                        <div class="card-title up">📈 上涨预测</div>
+                        <div class="empty-state">暂无上涨预测</div>
+                    </div>
+                `;
+            }
+            
+            // 下跌板块
+            if (data.top_losers && data.top_losers.length > 0) {
+                html += `
+                    <div class="card">
+                        <div class="card-title down">
+                            📉 下跌预测 TOP${Math.min(data.top_losers.length, 5)}
+                            <span class="badge">${data.top_losers.length}个板块</span>
+                        </div>
+                        <ul class="stock-list">
+                            ${data.top_losers.slice(0, 5).map(item => `
+                                <li class="stock-item">
+                                    <span class="stock-name">${escapeHtml(item.sector)}</span>
+                                    <span class="stock-change down">${item.prediction}%</span>
+                                </li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                `;
+            } else {
+                html += `
+                    <div class="card">
+                        <div class="card-title down">📉 下跌预测</div>
+                        <div class="empty-state">暂无下跌预测</div>
+                    </div>
+                `;
+            }
+            
             document.getElementById('content').innerHTML = html;
         }
+        
+        // 防XSS攻击
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        // 页面加载时获取数据
         fetchData();
-        setInterval(fetchData, 300000);
+        
+        // 每30分钟自动刷新
+        setInterval(fetchData, 30 * 60 * 1000);
     </script>
 </body>
 </html>
