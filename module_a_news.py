@@ -17,7 +17,7 @@ class FCSNewsCollector:
         初始化 FCS API 客户端
         API Key 从环境变量获取，或直接传入
         """
-        self.api_key = api_key or os.environ.get('FCS_API_KEY', 'mnYHRqd0uLgSjKcpMhhaRM')
+        self.api_key = api_key or os.environ.get('FCS_API_KEY', 'rkpZZVOkIH7GIzBUZmu9HWmKx7dYP')
         self.base_url = "https://api-v4.fcsapi.com"
         self.session = requests.Session()
         self.session.headers.update({
