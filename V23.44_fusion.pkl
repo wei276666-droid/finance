@@ -1,6 +1,12 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+# In[5]:
+
+
+#!/usr/bin/env python
+# coding: utf-8
+
 # In[1]:
 
 
@@ -878,6 +884,19 @@ def save_model():
 
 if __name__ == "__main__":
     save_model()
+
+
+# In[ ]:
+
+
+
+
+
+
+# In[6]:
+
+
+get_ipython().run_cell_magic('writefile', 'create_model.py', 'import pickle\n\nclass FinancialPredictorV2344:\n    def __init__(self):\n        self.version = "V23.44"\n        self.sectors = [\n            \'半导体及元件\', \'电力设备\', \'小金属\', \'能源金属\', \'计算机应用\',\n            \'通信设备\', \'电池\', \'传媒\', \'化学制药\', \'房地产开发\',\n            \'银行\', \'证券\', \'煤炭开采加工\', \'石油石化\'\n        ]\n\n    def predict(self, events, northbound_flow=None, target_date=None,\n                market_breadth=None, prev_day_returns=None):\n        tech_score = 0\n        for event in events:\n            if \'科技\' in event.get(\'event_type\', \'\') or \'算力\' in event.get(\'event_type\', \'\'):\n                tech_score += event.get(\'strength\', 3.0)\n\n        base = 2.5 + min(2.5, tech_score / 4)\n\n        if northbound_flow and northbound_flow > 100:\n            base += 0.5\n\n        return {\n            \'top_gainers\': [\n                {\'sector\': \'半导体及元件\', \'prediction\': round(base + 1.5, 2)},\n                {\'sector\': \'电力设备\', \'prediction\': round(base + 1.2, 2)},\n                {\'sector\': \'小金属\', \'prediction\': round(base + 0.8, 2)},\n                {\'sector\': \'能源金属\', \'prediction\': round(base + 0.8, 2)},\n                {\'sector\': \'计算机应用\', \'prediction\': round(base + 0.7, 2)},\n                {\'sector\': \'通信设备\', \'prediction\': round(base + 0.7, 2)},\n                {\'sector\': \'电池\', \'prediction\': round(base + 0.6, 2)},\n                {\'sector\': \'传媒\', \'prediction\': round(base + 0.5, 2)},\n                {\'sector\': \'化学制药\', \'prediction\': round(base + 0.5, 2)},\n                {\'sector\': \'房地产开发\', \'prediction\': round(base + 0.4, 2)},\n            ],\n            \'top_losers\': [\n                {\'sector\': \'煤炭开采加工\', \'prediction\': -4.5},\n                {\'sector\': \'石油石化\', \'prediction\': -3.5},\n                {\'sector\': \'银行\', \'prediction\': -0.6},\n            ],\n            \'positive_sectors\': 10,\n            \'negative_sectors\': 3,\n            \'macro_base\': 0.02,\n            \'version\': self.version\n        }\n\n# 生成模型文件\nimport os\nmodel = FinancialPredictorV2344()\nwith open(\'V23.44_fusion.pkl\', \'wb\') as f:\n    pickle.dump(model, f)\n\nprint("✅ 模型文件已生成")\nprint("文件大小:", os.path.getsize(\'V23.44_fusion.pkl\'), "字节")\n')
 
 
 # In[ ]:
