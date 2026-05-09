@@ -1,104 +1,122 @@
-import json
+"""
+module_b_predict.py - V23.44 完整预测模块
+"""
+
+import pickle
 import os
-import requests
 from datetime import datetime
-from flask import Flask, jsonify, render_template, request
-from flask_cors import CORS
+from typing import List, Dict
 
-# 导入你的模块
-from module_a_news import UnifiedNewsCollector
-from module_b_predict import PredictEngine
 
-app = Flask(__name__)
-CORS(app)
-
-# 初始化
-news_collector = UnifiedNewsCollector()
-predict_engine = PredictEngine()
-DATA_DIR = 'data'
-if not os.path.exists(DATA_DIR):
-    os.makedirs(DATA_DIR)
-
-# ================== 页面 ==================
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-# ================== 预测 API ==================
-@app.route('/api/predict', methods=['GET'])
-def get_predictions():
-    try:
-        events = news_collector.fetch_and_process()
-        market_data = news_collector.get_market_data()
-        predictions = predict_engine.predict(
-            events=events,
-            northbound_flow=market_data.get('northbound_flow'),
-            market_breadth=market_data.get('market_breadth')
-        )
-        return jsonify({
-            'code': 0,
-            'data': {
-                'top_gainers': predictions.get('top_gainers', [])[:10],
-                'top_losers': predictions.get('top_losers', [])[:5],
-                'update_time': datetime.now().strftime('%Y-%m-%d %H:%M'),
-                'summary': {
-                    'positive_count': predictions.get('positive_sectors', 0),
-                    'negative_count': predictions.get('negative_sectors', 0),
-                    'macro_base': predictions.get('macro_base', 0),
-                }
-            }
-        })
-    except Exception as e:
-        return jsonify({'code': -1, 'message': str(e)}), 500
-
-# ================== 学习 API ==================
-@app.route('/api/learn', methods=['POST'])
-def learn_from_actual():
-    try:
-        data = request.get_json()
-        date = data.get('date', datetime.now().strftime('%Y-%m-%d'))
-        actual_returns = data.get('actual_returns', {})
-        if not actual_returns:
-            return jsonify({'code': -1, 'message': 'actual_returns required'}), 400
-
-        actual_file = os.path.join(DATA_DIR, 'daily_actual.json')
-        if os.path.exists(actual_file):
-            with open(actual_file, 'r') as f:
-                actual_data = json.load(f)
-        else:
-            actual_data = {}
-
-        actual_data[date] = actual_returns
-        with open(actual_file, 'w') as f:
-            json.dump(actual_data, f, indent=2)
-
-        # 【关键修复】调用模型的自动学习方法
-        for sector, gain in actual_returns.items():
-            if predict_engine.model and hasattr(predict_engine.model, 'after_prediction_update'):
-                # 这里简单关联到第一个事件（可根据需要优化）
-                event_type = '科技政策' if gain > 0 else '银行利空'
-                predict_engine.model.after_prediction_update(
+class PredictEngine:
+    """V23.44 预测引擎"""
+    
+    def __init__(self, model_path='V23.44_fusion.pkl'):
+        self.model_path = model_path
+        self.model = self._load_model()
+    
+    def _load_model(self):
+        """加载V23.44模型"""
+        if os.path.exists(self.model_path):
+            try:
+                with open(self.model_path, 'rb') as f:
+                    model = pickle.load(f)
+                    print(f"✅ 模型加载成功: {getattr(model, 'version', 'V23.44')}")
+                    return model
+            except Exception as e:
+                print(f"⚠️ 模型加载失败: {e}")
+        return None
+    
+    def predict(self, events: List[Dict], northbound_flow: float = None,
+                market_breadth: float = None, prev_day_returns: Dict = None) -> Dict:
+        """执行预测"""
+        # 1. 优先使用真实模型
+        if self.model and hasattr(self.model, 'predict'):
+            try:
+                result = self.model.predict(
+                    events=events,
+                    northbound_flow=northbound_flow,
+                    target_date=datetime.now(),
+                    market_breadth=market_breadth,
+                    prev_day_returns=prev_day_returns
+                )
+                return result
+            except Exception as e:
+                print(f"⚠️ 模型预测失败: {e}")
+        
+        # 2. 降级：使用内置预测逻辑
+        return self._fallback_predict(events, northbound_flow, market_breadth)
+    
+    def _fallback_predict(self, events, northbound_flow, market_breadth):
+        """内置预测逻辑（模型不可用时）"""
+        # 计算科技事件强度
+        tech_score = 0
+        for event in events:
+            event_type = event.get('event_type', '')
+            strength = event.get('strength', 3.0)
+            if '科技' in event_type or '算力' in event_type:
+                tech_score += strength
+        
+        # 基础涨幅（β缩放0.7）
+        base = 2.5 + min(2.5, tech_score / 4)
+        
+        # 北向资金影响
+        if northbound_flow:
+            if northbound_flow > 100:
+                base += 0.5
+            elif northbound_flow < -50:
+                base -= 0.3
+        
+        return {
+            'top_gainers': [
+                {'sector': '半导体及元件', 'prediction': round(base + 1.5, 2)},
+                {'sector': '电力设备', 'prediction': round(base + 1.2, 2)},
+                {'sector': '小金属', 'prediction': round(base + 0.8, 2)},
+                {'sector': '能源金属', 'prediction': round(base + 0.8, 2)},
+                {'sector': '计算机应用', 'prediction': round(base + 0.7, 2)},
+                {'sector': '通信设备', 'prediction': round(base + 0.7, 2)},
+                {'sector': '电池', 'prediction': round(base + 0.6, 2)},
+                {'sector': '传媒', 'prediction': round(base + 0.5, 2)},
+                {'sector': '化学制药', 'prediction': round(base + 0.5, 2)},
+                {'sector': '房地产开发', 'prediction': round(base + 0.4, 2)},
+            ],
+            'top_losers': [
+                {'sector': '煤炭开采加工', 'prediction': -4.5},
+                {'sector': '石油石化', 'prediction': -3.5},
+                {'sector': '银行', 'prediction': -0.6},
+                {'sector': '旅游及酒店', 'prediction': -0.5},
+            ],
+            'positive_sectors': 10,
+            'negative_sectors': 4,
+            'macro_base': 0.02,
+            'version': 'V23.44 (Fallback)',
+            'event_count': len(events)
+        }
+    
+    def update_model(self, event_type, sector, event_score, predicted, actual, date):
+        """更新模型（收盘后调用）"""
+        if self.model and hasattr(self.model, 'after_prediction_update'):
+            try:
+                self.model.after_prediction_update(
                     event_type=event_type,
                     sector=sector,
-                    event_score=4.0,
-                    predicted_impact=0,
-                    actual_gain=gain,
-                    date=datetime.strptime(date, '%Y-%m-%d')
+                    event_score=event_score,
+                    predicted_impact=predicted,
+                    actual_gain=actual,
+                    date=date
                 )
+                with open(self.model_path, 'wb') as f:
+                    pickle.dump(self.model, f)
+                return True
+            except Exception as e:
+                print(f"⚠️ 模型更新失败: {e}")
+        return False
 
-        # 保存模型
-        with open('V23.44_fusion.pkl', 'wb') as f:
-            pickle.dump(predict_engine.model, f)
 
-        return jsonify({'code': 0, 'message': f'已保存 {date} 的实际数据并更新模型'})
-    except Exception as e:
-        return jsonify({'code': -1, 'message': str(e)}), 500
-
-# ================== 健康检查 ==================
-@app.route('/api/health', methods=['GET'])
-def health():
-    return jsonify({'status': 'ok', 'timestamp': datetime.now().isoformat()})
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+# 测试代码
+if __name__ == "__main__":
+    engine = PredictEngine()
+    result = engine.predict([])
+    print(f"预测结果: {len(result['top_gainers'])} 个上涨板块")
+    for p in result['top_gainers'][:5]:
+        print(f"  {p['sector']}: {p['prediction']:.2f}%")
