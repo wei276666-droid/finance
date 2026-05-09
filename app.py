@@ -83,3 +83,34 @@ def update_actual():
         return jsonify({'code': 0, 'message': f'已保存 {date} 的实际数据'})
     except Exception as e:
         return jsonify({'code': -1, 'message': str(e)}), 500
+        @app.route('/api/update_actual', methods=['POST'])
+def update_actual():
+    """手动更新今日实际数据"""
+    try:
+        data = request.get_json()
+        date = data.get('date', datetime.now().strftime('%Y-%m-%d'))
+        actual_returns = data.get('actual_returns', {})
+        
+        if not actual_returns:
+            return jsonify({'code': -1, 'message': 'actual_returns required'}), 400
+        
+        # 保存到 data/daily_actual.json
+        data_file = os.path.join('data', 'daily_actual.json')
+        
+        # 确保 data 目录存在
+        os.makedirs('data', exist_ok=True)
+        
+        if os.path.exists(data_file):
+            with open(data_file, 'r', encoding='utf-8') as f:
+                all_data = json.load(f)
+        else:
+            all_data = {}
+        
+        all_data[date] = actual_returns
+        
+        with open(data_file, 'w', encoding='utf-8') as f:
+            json.dump(all_data, f, ensure_ascii=False, indent=2)
+        
+        return jsonify({'code': 0, 'message': f'已保存 {date} 的实际数据，共 {len(actual_returns)} 个板块'})
+    except Exception as e:
+        return jsonify({'code': -1, 'message': str(e)}), 500
