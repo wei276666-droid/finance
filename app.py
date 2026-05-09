@@ -32,7 +32,7 @@ def index():
         return jsonify({'status': 'ok', 'message': 'Financial Predictor API'})
 
 
-@app.route('/api/health', methods=['GET'])
+@app.route('/api/health', methods=['GET', 'POST'])
 def health():
     return jsonify({'status': 'ok', 'timestamp': datetime.now().isoformat()})
 
